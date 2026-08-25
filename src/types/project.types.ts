@@ -104,7 +104,12 @@ export interface TimelineLayer {
     animated: boolean;
     animationProgress: number; // 0-1 during playback
     distanceKm?: number;
-    vehicle?: 'car' | 'motorcycle';
+    durationMinutes?: number;
+    vehicle?: 'car' | 'motorcycle' | 'airplane' | 'boat';
+    showVehicle?: boolean;
+    cameraTracking?: boolean;
+    cameraPitch?: number;
+    cameraZoom?: number;
     fromName?: string;
     toName?: string;
   };

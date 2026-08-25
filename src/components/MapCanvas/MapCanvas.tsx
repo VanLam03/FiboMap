@@ -5,7 +5,7 @@ import {
   Plus, Minus, Compass, Info, Layers, Search,
   MessageSquare, Globe, Moon, Scroll, Route, Mountain, Sun, Satellite,
   MapPin, Building, Share2, Phone, Plane, Car, User, Ship, Radio,
-  X, Navigation2
+  X, Navigation2, Bike
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import type { MapStyle, AspectRatio } from '../../types/project.types';
@@ -176,7 +176,7 @@ export const MapCanvas: React.FC = () => {
     aspectRatio, mapStyle, setMapStyle, currentCamera, setCurrentCamera,
     isKeyframeCameraMode, mapDimming, playhead, layers, activeView, mediaBackground,
     cameraKeyframes, deleteCameraKeyframe, activeTool, duration, addLayer, selectLayer,
-    selectedLayerId
+    selectedLayerId, isPlaying
   } = useProjectStore();
 
   const { addKeyframeAtPlayhead, applyCameraAtTime } = useKeyframeCamera(mapRef);
@@ -410,6 +410,60 @@ function slicePerimeterLine(coords: [number, number][], progress: number): [numb
   return result.length > 1 ? result : [coords[0], coords[0]];
 }
 
+// Calculate bearing (heading angle in degrees 0-360) between 2 GPS coordinates
+function calculateBearing(p0: [number, number], p1: [number, number]): number {
+  const rad = Math.PI / 180;
+  const lat1 = p0[1] * rad;
+  const lat2 = p1[1] * rad;
+  const dLng = (p1[0] - p0[0]) * rad;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  return Number(bearing.toFixed(1));
+}
+
+// Interpolate vehicle position [lng, lat] and heading angle along route at progress (0.0 to 1.0)
+function getVehicleStateAlongPath(coords: [number, number][], progress: number): { position: [number, number]; bearing: number } {
+  if (!coords || coords.length === 0) return { position: [0, 0], bearing: 0 };
+  if (coords.length === 1 || progress <= 0) {
+    const bearing = coords.length > 1 ? calculateBearing(coords[0], coords[1]) : 0;
+    return { position: coords[0], bearing };
+  }
+  if (progress >= 1) {
+    const last = coords[coords.length - 1];
+    const prev = coords[coords.length - 2] || last;
+    const bearing = calculateBearing(prev, last);
+    return { position: last, bearing };
+  }
+
+  const dists: number[] = [];
+  let totalDist = 0;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const d = Math.hypot(coords[i + 1][0] - coords[i][0], coords[i + 1][1] - coords[i][1]);
+    dists.push(d);
+    totalDist += d;
+  }
+
+  if (totalDist === 0) return { position: coords[0], bearing: 0 };
+
+  const targetDist = progress * totalDist;
+  let accum = 0;
+
+  for (let i = 0; i < dists.length; i++) {
+    const d = dists[i];
+    if (accum + d >= targetDist) {
+      const frac = d > 0 ? (targetDist - accum) / d : 0;
+      const lng = coords[i][0] + frac * (coords[i + 1][0] - coords[i][0]);
+      const lat = coords[i][1] + frac * (coords[i + 1][1] - coords[i][1]);
+      const bearing = calculateBearing(coords[i], coords[i + 1]);
+      return { position: [lng, lat], bearing };
+    }
+    accum += d;
+  }
+
+  return { position: coords[coords.length - 1], bearing: calculateBearing(coords[coords.length - 2] || coords[0], coords[coords.length - 1]) };
+}
+
   // Sync GeoJSON / Vector layers onto MapLibre instance
   useEffect(() => {
     const map = mapRef.current;
@@ -622,27 +676,69 @@ function slicePerimeterLine(coords: [number, number][], progress: number): [numb
             }
           }
         } else if (layer.lineData) {
-          // Line / Route
+          // Line / Route with Real-time Progressive Slicing & Camera Tracking
+          const fullCoords = (layer.lineData.geojson?.geometry as any)?.coordinates as [number, number][] || [];
+          const isRouteActive = isVisible && fullCoords.length >= 2;
+
+          let lineCoords = fullCoords;
+          let routeProgress = 1.0;
+
+          if (isRouteActive && layer.lineData.animated !== false) {
+            const relTime = playhead - layer.startTime;
+            const duration = Math.max(0.1, layer.endTime - layer.startTime);
+            routeProgress = Math.max(0.001, Math.min(1.0, relTime / duration));
+            lineCoords = slicePerimeterLine(fullCoords, routeProgress);
+          }
+
+          const dynamicLineGeojson = {
+            type: 'Feature',
+            properties: {},
+            geometry: {
+              type: 'LineString',
+              coordinates: lineCoords.length >= 2 ? lineCoords : [[0, 0], [0, 0]],
+            },
+          };
+
+          if (!map.getSource(sourceId)) {
+            map.addSource(sourceId, { type: 'geojson', data: dynamicLineGeojson as any });
+          } else {
+            (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData(dynamicLineGeojson as any);
+          }
+
           if (!map.getLayer(lineId)) {
             map.addLayer({
               id: lineId,
               type: 'line',
               source: sourceId,
+              layout: {
+                'line-cap': 'round',
+                'line-join': 'round',
+              },
               paint: {
-                'line-color': layer.lineData.color || '#3b82f6',
-                'line-width': layer.lineData.width || 3.5,
+                'line-color': layer.lineData.color || '#00f0ff',
+                'line-width': layer.lineData.width || 4.0,
                 'line-opacity': isVisible ? 1 : 0,
               },
             });
           } else {
-            map.setPaintProperty(lineId, 'line-color', layer.lineData.color || '#3b82f6');
+            map.setPaintProperty(lineId, 'line-color', layer.lineData.color || '#00f0ff');
             map.setPaintProperty(lineId, 'line-opacity', isVisible ? 1 : 0);
-            map.setPaintProperty(lineId, 'line-width', layer.lineData.width || 3.5);
+            map.setPaintProperty(lineId, 'line-width', layer.lineData.width || 4.0);
+          }
+
+          // Camera Tracking (Chase Cam)
+          if (isRouteActive && layer.lineData.cameraTracking && isPlaying) {
+            const { position, bearing } = getVehicleStateAlongPath(fullCoords, routeProgress);
+            map.jumpTo({
+              center: position,
+              pitch: layer.lineData.cameraPitch || 48,
+              bearing: bearing * 0.4,
+            });
           }
         }
       }
     });
-  }, [layers, playhead, mapReady]);
+  }, [layers, playhead, mapReady, isPlaying]);
 
   const handleZoomIn = () => mapRef.current?.zoomIn({ duration: 300 });
   const handleZoomOut = () => mapRef.current?.zoomOut({ duration: 300 });
@@ -890,6 +986,54 @@ function slicePerimeterLine(coords: [number, number][], progress: number): [numb
                   )}
                 </div>
               );
+            }
+
+            // Animated Vehicle Marker on Route
+            if ((layer.type === 'route' || layer.type === 'line') && layer.lineData?.showVehicle !== false) {
+              const fullCoords = (layer.lineData?.geojson?.geometry as any)?.coordinates as [number, number][] || [];
+              if (fullCoords.length >= 2) {
+                const relTime = playhead - layer.startTime;
+                const duration = Math.max(0.1, layer.endTime - layer.startTime);
+                const routeProgress = Math.max(0.001, Math.min(1.0, relTime / duration));
+                const { position, bearing } = getVehicleStateAlongPath(fullCoords, routeProgress);
+                const map = mapRef.current;
+                const p = map?.project(position);
+
+                if (p && !isNaN(p.x) && !isNaN(p.y)) {
+                  const vehicleType = layer.lineData?.vehicle || 'car';
+                  return (
+                    <div
+                      key={`vehicle-${layer.id}`}
+                      className="absolute pointer-events-none transition-transform duration-75 z-20"
+                      style={{
+                        left: `${p.x}px`,
+                        top: `${p.y}px`,
+                        transform: `translate(-50%, -50%) rotate(${bearing}deg)`,
+                      }}
+                    >
+                      {/* Glowing Vehicle Icon */}
+                      <div
+                        className="w-10 h-10 rounded-2xl flex items-center justify-center shadow-2xl border-2 transition-all relative group"
+                        style={{
+                          backgroundColor: '#0f172a',
+                          borderColor: layer.lineData?.color || '#00f0ff',
+                          boxShadow: `0 0 22px ${layer.lineData?.color || '#00f0ff'}90, 0 4px 14px rgba(0,0,0,0.85)`,
+                        }}
+                      >
+                        {vehicleType === 'airplane' ? (
+                          <Plane size={20} className="text-sky-400 -rotate-45" />
+                        ) : vehicleType === 'boat' ? (
+                          <Ship size={20} className="text-teal-400" />
+                        ) : vehicleType === 'motorcycle' ? (
+                          <Bike size={20} className="text-amber-400" />
+                        ) : (
+                          <Car size={20} className="text-cyan-400" />
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+              }
             }
 
             return null;
