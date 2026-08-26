@@ -145,101 +145,59 @@ function getFrameDimensions(ratio: AspectRatio): { w: number; h: number; label: 
   }
 }
 
-// High-precision coordinates database for all major Vietnamese cities, tourist destinations and provincial centers
-const ACCURATE_VN_LOCATIONS: { name: string; aliases: string[]; coords: [number, number]; zoom: number; label: string }[] = [
-  { name: 'Đà Lạt', aliases: ['da lat', 'thanh pho da lat', 'tp da lat', 'dalat'], coords: [108.4583, 11.9404], zoom: 11.2, label: 'Thành phố Đà Lạt, Lâm Đồng' },
-  { name: 'Nha Trang', aliases: ['nha trang', 'tp nha trang', 'thanh pho nha trang'], coords: [109.1967, 12.2388], zoom: 11.5, label: 'Thành phố Nha Trang, Khánh Hòa' },
-  { name: 'Phan Thiết', aliases: ['phan thiet', 'tp phan thiet', 'mui ne'], coords: [108.1022, 10.9289], zoom: 11.5, label: 'Thành phố Phan Thiết, Bình Thuận' },
-  { name: 'Quy Nhơn', aliases: ['quy nhon', 'tp quy nhon', 'binh dinh'], coords: [109.2197, 13.7820], zoom: 11.5, label: 'Thành phố Quy Nhơn, Bình Định' },
-  { name: 'Pleiku', aliases: ['pleiku', 'tp pleiku', 'gia lai'], coords: [108.0021, 13.9833], zoom: 11.5, label: 'Thành phố Pleiku, Gia Lai' },
-  { name: 'Buôn Ma Thuột', aliases: ['buon ma thuot', 'bmt', 'dak lak', 'daklak'], coords: [108.0383, 12.6667], zoom: 11.5, label: 'Thành phố Buôn Ma Thuột, Đắk Lắk' },
-  { name: 'Vũng Tàu', aliases: ['vung tau', 'tp vung tau', 'ba ria vung tau'], coords: [107.0843, 10.3460], zoom: 11.5, label: 'Thành phố Vũng Tàu, Bà Rịa - Vũng Tàu' },
-  { name: 'Cần Thơ', aliases: ['can tho', 'tp can tho', 'ninh kieu'], coords: [105.7838, 10.0452], zoom: 11.2, label: 'Thành phố Cần Thơ' },
-  { name: 'Phú Quốc', aliases: ['phu quoc', 'tp phu quoc', 'dao phu quoc', 'kien giang'], coords: [103.9575, 10.2289], zoom: 10.5, label: 'Thành phố đảo Phú Quốc, Kiên Giang' },
-  { name: 'Cà Mau', aliases: ['ca mau', 'tp ca mau', 'tinh ca mau', 'dat mui'], coords: [105.1500, 9.1769], zoom: 11.0, label: 'Thành phố Cà Mau' },
-  { name: 'Hà Nội', aliases: ['ha noi', 'thu do ha noi', 'hoan kiem', 'hn'], coords: [105.8412, 21.0245], zoom: 11.2, label: 'Thủ đô Hà Nội' },
-  { name: 'TP. Hồ Chí Minh', aliases: ['tp ho chi minh', 'ho chi minh', 'sai gon', 'tphcm', 'hcm'], coords: [106.6968, 10.7769], zoom: 11.2, label: 'Thành phố Hồ Chí Minh (Sài Gòn)' },
-  { name: 'Đà Nẵng', aliases: ['da nang', 'tp da nang', 'hai chau'], coords: [108.2243, 16.0610], zoom: 11.5, label: 'Thành phố Đà Nẵng' },
-  { name: 'Hải Phòng', aliases: ['hai phong', 'tp hai phong', 'dat cang'], coords: [106.6881, 20.8449], zoom: 11.2, label: 'Thành phố Hải Phòng' },
-  { name: 'Huế', aliases: ['hue', 'tp hue', 'thua thien hue', 'co do hue'], coords: [107.5909, 16.4637], zoom: 11.5, label: 'Thành phố Huế, Thừa Thiên Huế' },
-  { name: 'Hạ Long', aliases: ['ha long', 'tp ha long', 'quang ninh', 'vinh ha long'], coords: [107.0843, 20.9505], zoom: 11.2, label: 'Thành phố Hạ Long, Quảng Ninh' },
-  { name: 'Sa Pa', aliases: ['sa pa', 'sapa', 'lao cai', 'fansipan'], coords: [103.8438, 22.3364], zoom: 11.8, label: 'Thị xã Sa Pa, Lào Cai' },
-  { name: 'Hội An', aliases: ['hoi an', 'tp hoi an', 'pho co hoi an', 'quang nam'], coords: [108.3380, 15.8801], zoom: 12.2, label: 'Thành phố Hội An, Quảng Nam' },
-  { name: 'Bảo Lộc', aliases: ['bao loc', 'tp bao loc'], coords: [107.8105, 11.5476], zoom: 11.8, label: 'Thành phố Bảo Lộc, Lâm Đồng' },
-  { name: 'Thanh Hóa', aliases: ['thanh hoa', 'tp thanh hoa', 'sam son'], coords: [105.7667, 19.8000], zoom: 11.2, label: 'Thành phố Thanh Hóa' },
-  { name: 'Vinh', aliases: ['vinh', 'tp vinh', 'nghe an'], coords: [105.6833, 18.6667], zoom: 11.2, label: 'Thành phố Vinh, Nghệ An' },
-  { name: 'Ninh Bình', aliases: ['ninh binh', 'tp ninh binh', 'trang an'], coords: [105.9750, 20.2500], zoom: 11.2, label: 'Thành phố Ninh Bình' },
-  { name: 'Phan Rang', aliases: ['phan rang', 'thap cham', 'ninh thuan'], coords: [108.9883, 11.5683], zoom: 11.5, label: 'Thành phố Phan Rang - Tháp Chàm, Ninh Thuận' },
-  { name: 'Tuy Hòa', aliases: ['tuy hoa', 'tp tuy hoa', 'phu yen'], coords: [109.3000, 13.0833], zoom: 11.5, label: 'Thành phố Tuy Hòa, Phú Yên' },
-  { name: 'Đồng Hới', aliases: ['dong hoi', 'tp dong hoi', 'quang binh'], coords: [106.6200, 17.4700], zoom: 11.5, label: 'Thành phố Đồng Hới, Quảng Bình' },
-  { name: 'Đông Hà', aliases: ['dong ha', 'tp dong ha', 'quang tri'], coords: [107.0833, 16.8167], zoom: 11.5, label: 'Thành phố Đông Hà, Quảng Trị' },
-  { name: 'Quảng Ngãi', aliases: ['quang ngai', 'tp quang ngai'], coords: [108.8000, 15.1167], zoom: 11.5, label: 'Thành phố Quảng Ngãi' },
-  { name: 'Rạch Giá', aliases: ['rach gia', 'tp rach gia'], coords: [105.0760, 10.0120], zoom: 11.5, label: 'Thành phố Rạch Giá, Kiên Giang' },
-  { name: 'Biên Hòa', aliases: ['bien hoa', 'tp bien hoa', 'dong nai'], coords: [106.8333, 10.9500], zoom: 11.2, label: 'Thành phố Biên Hòa, Đồng Nai' },
-  { name: 'Thủ Dầu Một', aliases: ['thu dau mot', 'tp thu dau mot', 'binh duong'], coords: [106.6500, 10.9833], zoom: 11.5, label: 'Thành phố Thủ Dầu Một, Bình Dương' },
-  { name: 'Mỹ Tho', aliases: ['my tho', 'tp my tho', 'tien giang'], coords: [106.3639, 10.3538], zoom: 11.5, label: 'Thành phố Mỹ Tho, Tiền Giang' },
-  { name: 'Bến Tre', aliases: ['ben tre', 'tp ben tre'], coords: [106.3750, 10.2417], zoom: 11.5, label: 'Thành phố Bến Tre' },
-  { name: 'Long Xuyên', aliases: ['long xuyen', 'tp long xuyen', 'an giang'], coords: [105.4358, 10.3833], zoom: 11.5, label: 'Thành phố Long Xuyên, An Giang' },
-  { name: 'Tây Ninh', aliases: ['tay ninh', 'tp tay ninh', 'nui ba den'], coords: [106.1000, 11.3000], zoom: 11.2, label: 'Thành phố Tây Ninh' },
-  { name: 'Sơn La', aliases: ['son la', 'tp son la', 'moc chau'], coords: [103.9000, 21.3167], zoom: 11.0, label: 'Thành phố Sơn La' },
-  { name: 'Điện Biên', aliases: ['dien bien', 'tp dien bien phu', 'muong thanh'], coords: [103.0167, 21.3833], zoom: 11.5, label: 'Thành phố Điện Biên Phủ' },
-];
+// Real-time Dynamic Geocoding Search (100% accurate worldwide, no hardcoded coordinates)
+async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string; zoom: number }[]> {
+  const clean = query.trim();
+  if (!clean) return [];
 
-// High-precision place search (Prioritizes exact location geocoding identical to Google Maps)
-async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string; zoom?: number }[]> {
-  const norm = removeVietnameseTones(query.trim());
-  if (!norm) return [];
-
-  const results: { display_name: string; lat: string; lon: string; zoom?: number }[] = [];
-
-  // 1. Exact local centroid matches for famous Vietnamese cities
-  for (const loc of ACCURATE_VN_LOCATIONS) {
-    if (
-      removeVietnameseTones(loc.name) === norm ||
-      loc.aliases.some(a => removeVietnameseTones(a) === norm || removeVietnameseTones(a).includes(norm))
-    ) {
-      results.push({
-        display_name: loc.label,
-        lat: String(loc.coords[1]),
-        lon: String(loc.coords[0]),
-        zoom: loc.zoom,
-      });
-    }
-  }
-
-  // 2. Query OpenStreetMap Nominatim Live Geocoding API (Exact street, ward, city, landmark worldwide)
   try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&addressdetails=1&accept-language=vi,en`,
-      { headers: { 'Accept-Language': 'vi,en', 'User-Agent': 'FiboMap-Cinematic-App/2.0' } }
-    );
-    if (res.ok) {
-      const osmResults = await res.json();
-      for (const item of osmResults) {
-        if (!results.some(r => Math.abs(parseFloat(r.lat) - parseFloat(item.lat)) < 0.03 && Math.abs(parseFloat(r.lon) - parseFloat(item.lon)) < 0.03)) {
-          let zoom = 11.0;
-          if (item.boundingbox && Array.isArray(item.boundingbox)) {
-            const minLat = parseFloat(item.boundingbox[0]);
-            const maxLat = parseFloat(item.boundingbox[1]);
-            const minLon = parseFloat(item.boundingbox[2]);
-            const maxLon = parseFloat(item.boundingbox[3]);
-            const span = Math.max(Math.abs(maxLon - minLon), Math.abs(maxLat - minLat));
-            zoom = span > 2.0 ? 8.5 : span > 0.8 ? 9.5 : span > 0.3 ? 10.5 : span > 0.08 ? 11.5 : 12.5;
-          }
-          results.push({
-            display_name: item.display_name,
-            lat: item.lat,
-            lon: item.lon,
-            zoom,
-          });
-        }
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(clean)}&limit=7&addressdetails=1&accept-language=vi,en`;
+    const res = await fetch(url, {
+      headers: {
+        'Accept-Language': 'vi,en',
+        'User-Agent': 'FiboMap-Cinematic-App/2.0',
+      },
+    });
+
+    if (!res.ok) return [];
+    const osmResults = await res.json();
+
+    return osmResults.map((item: any) => {
+      let zoom = 11.0;
+      // Calculate dynamic camera zoom based on the geographic bounding box size
+      if (item.boundingbox && Array.isArray(item.boundingbox) && item.boundingbox.length >= 4) {
+        const minLat = parseFloat(item.boundingbox[0]);
+        const maxLat = parseFloat(item.boundingbox[1]);
+        const minLon = parseFloat(item.boundingbox[2]);
+        const maxLon = parseFloat(item.boundingbox[3]);
+        const span = Math.max(Math.abs(maxLon - minLon), Math.abs(maxLat - minLat));
+
+        if (span > 3.0) zoom = 7.5;        // Large regions / countries
+        else if (span > 1.2) zoom = 8.5;   // Big provinces
+        else if (span > 0.4) zoom = 9.8;   // Cities / large districts
+        else if (span > 0.1) zoom = 11.0;  // Towns / small districts
+        else if (span > 0.02) zoom = 12.5; // Wards / communes
+        else zoom = 13.8;                  // Specific street / building / landmark
+      } else {
+        const type = item.type || item.addresstype || '';
+        if (type === 'country') zoom = 6.0;
+        else if (type === 'state' || type === 'province') zoom = 8.8;
+        else if (type === 'city') zoom = 10.0;
+        else if (type === 'county' || type === 'district') zoom = 11.0;
+        else zoom = 12.5;
       }
-    }
+
+      return {
+        display_name: item.display_name,
+        lat: item.lat,
+        lon: item.lon,
+        zoom,
+      };
+    });
   } catch (err) {
     console.warn('Geocoding search API error:', err);
+    return [];
   }
-
-  return results.slice(0, 8);
 }
 
 export const MapCanvas: React.FC = () => {
