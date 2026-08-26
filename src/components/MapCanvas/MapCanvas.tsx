@@ -145,8 +145,15 @@ function getFrameDimensions(ratio: AspectRatio): { w: number; h: number; label: 
   }
 }
 
-// Real-time Dynamic Geocoding Search (100% accurate worldwide, no hardcoded coordinates)
-async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string; zoom: number }[]> {
+export interface PlaceSearchResult {
+  display_name: string;
+  lat: string;
+  lon: string;
+  bbox?: [number, number, number, number]; // [west, south, east, north]
+}
+
+// Real-time Dynamic Geocoding Search (100% accurate worldwide with boundingbox)
+async function searchPlace(query: string): Promise<PlaceSearchResult[]> {
   const clean = query.trim();
   if (!clean) return [];
 
@@ -163,35 +170,20 @@ async function searchPlace(query: string): Promise<{ display_name: string; lat: 
     const osmResults = await res.json();
 
     return osmResults.map((item: any) => {
-      let zoom = 11.0;
-      // Calculate dynamic camera zoom based on the geographic bounding box size
+      let bbox: [number, number, number, number] | undefined = undefined;
       if (item.boundingbox && Array.isArray(item.boundingbox) && item.boundingbox.length >= 4) {
-        const minLat = parseFloat(item.boundingbox[0]);
-        const maxLat = parseFloat(item.boundingbox[1]);
-        const minLon = parseFloat(item.boundingbox[2]);
-        const maxLon = parseFloat(item.boundingbox[3]);
-        const span = Math.max(Math.abs(maxLon - minLon), Math.abs(maxLat - minLat));
-
-        if (span > 3.0) zoom = 7.5;        // Large regions / countries
-        else if (span > 1.2) zoom = 8.5;   // Big provinces
-        else if (span > 0.4) zoom = 9.8;   // Cities / large districts
-        else if (span > 0.1) zoom = 11.0;  // Towns / small districts
-        else if (span > 0.02) zoom = 12.5; // Wards / communes
-        else zoom = 13.8;                  // Specific street / building / landmark
-      } else {
-        const type = item.type || item.addresstype || '';
-        if (type === 'country') zoom = 6.0;
-        else if (type === 'state' || type === 'province') zoom = 8.8;
-        else if (type === 'city') zoom = 10.0;
-        else if (type === 'county' || type === 'district') zoom = 11.0;
-        else zoom = 12.5;
+        const south = parseFloat(item.boundingbox[0]);
+        const north = parseFloat(item.boundingbox[1]);
+        const west = parseFloat(item.boundingbox[2]);
+        const east = parseFloat(item.boundingbox[3]);
+        bbox = [west, south, east, north];
       }
 
       return {
         display_name: item.display_name,
         lat: item.lat,
         lon: item.lon,
-        zoom,
+        bbox,
       };
     });
   } catch (err) {
@@ -208,7 +200,7 @@ export const MapCanvas: React.FC = () => {
   const [showStylePicker, setShowStylePicker] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ display_name: string; lat: string; lon: string; zoom?: number }[]>([]);
+  const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [coords, setCoords] = useState<{ lng: number; lat: number } | null>(null);
 
@@ -237,22 +229,44 @@ export const MapCanvas: React.FC = () => {
     setSearchLoading(false);
   }, []);
 
-  // Cinematic Zoom-out -> Zoom-in Camera Swoop (shows whole region, doesn't zoom in too close)
-  const flyToLocationWithCinematicZoom = useCallback((lng: number, lat: number, targetZoom = 9.8) => {
+  // Cinematic Flight & fitBounds to frame the whole region perfectly without manual zoom guessing
+  const flyToLocationWithCinematicZoom = useCallback((result: PlaceSearchResult) => {
     const map = mapRef.current;
     if (!map) return;
 
+    const targetLng = parseFloat(result.lon);
+    const targetLat = parseFloat(result.lat);
     const currentCenter = map.getCenter();
     const currentZoom = map.getZoom();
-    const distDeg = Math.hypot(lng - currentCenter.lng, lat - currentCenter.lat);
+    const distDeg = Math.hypot(targetLng - currentCenter.lng, targetLat - currentCenter.lat);
 
-    const safeTargetZoom = Math.min(11.0, Math.max(8.5, targetZoom));
+    const executeFitBounds = (duration: number) => {
+      if (!mapRef.current) return;
+      if (result.bbox) {
+        mapRef.current.fitBounds(
+          [[result.bbox[0], result.bbox[1]], [result.bbox[2], result.bbox[3]]],
+          {
+            padding: 50,
+            duration,
+            maxZoom: 13.5,
+            essential: true,
+          }
+        );
+      } else {
+        mapRef.current.flyTo({
+          center: [targetLng, targetLat],
+          zoom: 10.5,
+          duration,
+          essential: true,
+        });
+      }
+    };
 
-    // If distance is far, execute 2-stage cinematic swooping (Zoom out overview -> Swoop in target region)
-    if (distDeg > 0.4) {
-      const midLng = (currentCenter.lng + lng) / 2;
-      const midLat = (currentCenter.lat + lat) / 2;
-      const overviewZoom = Math.max(4.5, Math.min(currentZoom - 2.8, 6.5));
+    // If distance is far (> 0.5°), execute 2-stage cinematic flight (Zoom out overview -> Swoop in with fitBounds)
+    if (distDeg > 0.5) {
+      const midLng = (currentCenter.lng + targetLng) / 2;
+      const midLat = (currentCenter.lat + targetLat) / 2;
+      const overviewZoom = Math.max(4.2, Math.min(currentZoom - 2.8, 6.5));
 
       // Phase 1: Camera pulls out into high altitude overview
       map.flyTo({
@@ -260,43 +274,24 @@ export const MapCanvas: React.FC = () => {
         zoom: overviewZoom,
         pitch: 15,
         bearing: 0,
-        duration: 900,
+        duration: 850,
         curve: 1.8,
         essential: true,
       });
 
-      // Phase 2: Camera swoops down to show whole area nicely in frame
+      // Phase 2: Camera swoops down to frame the exact bounding box
       setTimeout(() => {
-        if (!mapRef.current) return;
-        mapRef.current.flyTo({
-          center: [lng, lat],
-          zoom: safeTargetZoom,
-          pitch: 20,
-          bearing: 0,
-          duration: 1400,
-          curve: 1.42,
-          essential: true,
-        });
-      }, 850);
+        executeFitBounds(1400);
+      }, 800);
     } else {
-      // Nearby distance: direct cinematic flight
-      map.flyTo({
-        center: [lng, lat],
-        zoom: safeTargetZoom,
-        pitch: 20,
-        bearing: 0,
-        duration: 1500,
-        speed: 0.9,
-        curve: 1.6,
-        essential: true,
-      });
+      // Nearby distance: direct smooth fitBounds
+      executeFitBounds(1500);
     }
 
-    // Keep camera coordinates updated without adding anything to timeline
     setCurrentCamera({
-      center: [lng, lat],
-      zoom: safeTargetZoom,
-      pitch: 20,
+      center: [targetLng, targetLat],
+      zoom: 10.5,
+      pitch: 0,
       bearing: 0,
     });
 
@@ -880,13 +875,13 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                     e.preventDefault();
                     if (searchResults.length > 0) {
                       const best = searchResults[0];
-                      flyToLocationWithCinematicZoom(parseFloat(best.lon), parseFloat(best.lat), best.zoom);
+                      flyToLocationWithCinematicZoom(best);
                     } else if (searchQuery.trim().length >= 1) {
                       setSearchLoading(true);
                       const results = await searchPlace(searchQuery.trim());
                       setSearchLoading(false);
                       if (results.length > 0) {
-                        flyToLocationWithCinematicZoom(parseFloat(results[0].lon), parseFloat(results[0].lat), results[0].zoom);
+                        flyToLocationWithCinematicZoom(results[0]);
                       }
                     }
                   } else if (e.key === 'Escape') {
@@ -910,7 +905,7 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                 {searchResults.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => flyToLocationWithCinematicZoom(parseFloat(r.lon), parseFloat(r.lat), r.zoom)}
+                    onClick={() => flyToLocationWithCinematicZoom(r)}
                     className="flex items-start gap-2.5 w-full px-3 py-2.5 text-left hover:bg-[#1e293b] transition-colors border-b border-[#1e293b]/60 last:border-0 group"
                   >
                     <MapPin size={13} className="text-cyan-400 flex-shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
