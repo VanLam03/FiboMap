@@ -4,7 +4,6 @@ import { useProjectStore } from '../../store/useProjectStore';
 import type { Feature } from 'geojson';
 import {
   VIETNAM_ADMIN_DATABASE,
-  WORLD_COUNTRIES_DATABASE,
   fetchLiveBoundaryGeoJSON,
   createPolygonFromBbox,
   parseSmartAdminQuery,
@@ -187,7 +186,8 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
     const timer = setTimeout(async () => {
       setIsLoadingLive(true);
       const parsed = parseSmartAdminQuery(searchTerm);
-      const results = await fetchLiveBoundaryGeoJSON(searchTerm);
+      const levelHint = activeTab === 'country' ? 'country' : parsed.levelHint;
+      const results = await fetchLiveBoundaryGeoJSON(searchTerm, levelHint);
       setLiveResults(results);
       setIsLoadingLive(false);
     }, 450);
