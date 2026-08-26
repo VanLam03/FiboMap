@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, MapPin, X, Plus, Sparkles, Building2, Map, Layers, Compass, Loader2, MousePointerClick, Check } from 'lucide-react';
+import { Search, MapPin, X, Plus, Sparkles, Building2, Map, Layers, Compass, Loader2, MousePointerClick, Check, Globe } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import type { Feature } from 'geojson';
 import {
   VIETNAM_ADMIN_DATABASE,
+  WORLD_COUNTRIES_DATABASE,
   fetchLiveBoundaryGeoJSON,
   createPolygonFromBbox,
   parseSmartAdminQuery,
@@ -13,12 +14,13 @@ import {
 } from '../../services/boundaryService';
 
 // ══════════════════════════════════════════════════════════════════════════
-// FETCH EXACT BOUNDARY — dùng Overpass API (cùng nguồn với bản đồ OSM)
-// Admin levels Vietnam: 4=tỉnh, 5=huyện, 8=xã/phường
+// FETCH EXACT BOUNDARY — dùng Overpass API & Nominatim (Hỗ trợ Quốc gia & VN)
+// Admin levels: 2=quốc gia, 4=tỉnh, 5=huyện, 8=xã/phường
 // ══════════════════════════════════════════════════════════════════════════
 
 // Map item level → OSM admin_level range
 const ADMIN_LEVEL_MAP: Record<string, number[]> = {
+  country: [2],
   province: [4],
   district: [5, 6],
   ward: [7, 8, 9, 10],
@@ -30,21 +32,35 @@ async function fetchOSMBoundaryGeoJSON(item: AdminBoundaryItem): Promise<Feature
     'User-Agent': 'FiboMap-Cinematic/2.0',
   };
 
-  // ── Strategy 1: Overpass API — exactly same source as map tiles ──────────
+  // ── Strategy 1: For Countries — Direct Polygon Search ────────────────────
+  if (item.level === 'country') {
+    try {
+      const cleanName = item.name.replace(/\(.*?\)/g, '').trim();
+      const countryQuery = item.mergedDetails ? `${cleanName}, ${item.mergedDetails}` : cleanName;
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(countryQuery)}&format=geojson&polygon_geojson=1&featuretype=country&limit=3`;
+      const res = await fetch(url, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const poly = (data?.features || []).find((f: any) =>
+          f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon'
+        );
+        if (poly) return poly as Feature;
+      }
+    } catch {
+      // Fall through to Overpass
+    }
+  }
+
+  // ── Strategy 2: Overpass API — exactly same source as map tiles ──────────
   try {
     const levels = ADMIN_LEVEL_MAP[item.level] || [4, 5, 8];
     const levelFilter = levels.map(l => `["admin_level"="${l}"]`).join('');
 
     // Search by Vietnamese name
     const cleanName = item.name.replace(/^(TP\.|Tỉnh|Huyện|Quận|Xã|Phường|Thị trấn)\s*/i, '').trim();
-    const overpassQuery = `
-[out:json][timeout:25];
-(
-  relation["boundary"="administrative"]${levelFilter}["name"~"${cleanName}",i](4.5,102.0,23.5,110.0);
-  relation["boundary"="administrative"]${levelFilter}["name:vi"~"${cleanName}",i](4.5,102.0,23.5,110.0);
-);
-out ids;
-`.trim();
+    const overpassQuery = item.level === 'country'
+      ? `[out:json][timeout:25]; ( relation["boundary"="administrative"]["admin_level"="2"]["name:en"~"${cleanName}",i]; relation["boundary"="administrative"]["admin_level"="2"]["name:vi"~"${cleanName}",i]; ); out ids;`
+      : `[out:json][timeout:25]; ( relation["boundary"="administrative"]${levelFilter}["name"~"${cleanName}",i](4.5,102.0,23.5,110.0); relation["boundary"="administrative"]${levelFilter}["name:vi"~"${cleanName}",i](4.5,102.0,23.5,110.0); ); out ids;`;
 
     const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
@@ -57,10 +73,7 @@ out ids;
       const relations: any[] = overpassData?.elements || [];
 
       if (relations.length > 0) {
-        // Pick the relation most likely to be the right one
         const relId = relations[0].id;
-
-        // Fetch the polygon via Nominatim lookup (fastest way to get GeoJSON)
         const lookupUrl = `https://nominatim.openstreetmap.org/lookup?osms=R${relId}&polygon_geojson=1&polygon_threshold=0&format=geojson`;
         const lookupRes = await fetch(lookupUrl, { headers });
         if (lookupRes.ok) {
@@ -68,7 +81,7 @@ out ids;
           const poly = (lookupData?.features || []).find((f: any) =>
             f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon'
           );
-          if (poly && isInVietnam(poly)) return poly as Feature;
+          if (poly && (item.level === 'country' || isInVietnam(poly))) return poly as Feature;
         }
       }
     }
@@ -76,28 +89,27 @@ out ids;
     // Overpass failed, fall through to Nominatim
   }
 
-  // ── Strategy 2: Nominatim search with strict admin level filter ──────────
+  // ── Strategy 3: Nominatim search with strict admin level filter ──────────
   try {
     const levels = ADMIN_LEVEL_MAP[item.level] || [4, 5, 8];
     const cleanName = item.name.replace(/^(TP\.|Tỉnh|Huyện|Quận|Xã|Phường)\s*/i, '').trim();
 
-    // Search for admin boundaries specifically
-    const searchUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanName + ', Vietnam')}&format=json&countrycodes=vn&limit=10&extratags=1&namedetails=1`;
+    const searchUrl = item.level === 'country'
+      ? `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanName)}&format=json&limit=6&extratags=1&namedetails=1`
+      : `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanName + ', Vietnam')}&format=json&countrycodes=vn&limit=10&extratags=1&namedetails=1`;
+    
     const searchRes = await fetch(searchUrl, { headers });
     if (!searchRes.ok) throw new Error('search failed');
     const searchData: any[] = await searchRes.json();
 
-    // Filter: must be a relation with boundary=administrative, correct admin_level
     const candidates = searchData.filter(r => {
       if (r.osm_type !== 'relation') return false;
       if (r.class !== 'boundary' && r.class !== 'place') return false;
       const adminLevel = parseInt(r.extratags?.admin_level || '0');
-      // Accept if admin level matches OR if it's within a reasonable range
-      if (adminLevel === 0) return true; // unknown level, include
+      if (adminLevel === 0) return true;
       return levels.some(l => Math.abs(adminLevel - l) <= 1);
     });
 
-    // Pick best: prefer exact admin_level match and boundary=administrative
     const sorted = (candidates.length > 0 ? candidates : searchData.filter(r => r.osm_type === 'relation').concat(searchData))
       .slice(0, 5)
       .sort((a: any, b: any) => {
@@ -118,7 +130,7 @@ out ids;
       const poly = (lookupData?.features || []).find((f: any) =>
         f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon'
       );
-      if (poly && isInVietnam(poly)) return poly as Feature;
+      if (poly && (item.level === 'country' || isInVietnam(poly))) return poly as Feature;
     }
 
     return null;
@@ -150,10 +162,9 @@ function isInVietnam(f: any): boolean {
   } catch { return true; }
 }
 
-
 export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<'all' | 'province' | 'district' | 'ward'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'country' | 'province' | 'district' | 'ward'>('all');
   const [enable3D, setEnable3D] = useState(true);
   const [extrudeHeight, setExtrudeHeight] = useState(600);
   const [appearEffect, setAppearEffect] = useState<'draw' | 'fade-in' | 'blink' | 'extrude-3d'>('draw');
@@ -293,12 +304,12 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
             <div>
               <h2 className="font-bold text-white text-base flex items-center gap-2">
                 Khoanh vùng tự động (Auto Boundary)
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                  Địa giới VN
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  Quốc gia & Địa giới VN
                 </span>
               </h2>
               <p className="text-slate-400 text-xs mt-0.5">
-                Nhận diện chính xác theo cấp Tỉnh/Thành phố, Quận/Huyện và Xã/Phường
+                Nhận diện chính xác theo Quốc gia, Tỉnh/Thành phố, Quận/Huyện và Xã/Phường
               </p>
             </div>
           </div>
@@ -316,7 +327,7 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
             <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Nhập tên Xã, Phường, Quận, Tỉnh (VD: Xã Vân Hà Bắc Giang, Phường Hà Đông Hà Nội, Phú Thọ...)"
+              placeholder="Nhập tên Quốc gia, Tỉnh, Quận, Xã (VD: Việt Nam, Hoa Kỳ, Nhật Bản, Gia Lai, Hà Nội, Đà Lạt...)"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-[#1e293b] text-white text-xs pl-10 pr-10 py-2.5 rounded-xl border border-slate-700 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-500 font-medium transition-all"
@@ -330,10 +341,11 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
           {/* Level Filter Tabs */}
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
-              { id: 'all', label: 'Tất cả (34 Tỉnh mới + Xã/Phường)' },
-              { id: 'province', label: '34 Tỉnh / TP Sáp nhập' },
-              { id: 'district', label: 'Quận / Huyện' },
-              { id: 'ward', label: 'Xã / Phường' },
+              { id: 'all', label: 'Tất cả' },
+              { id: 'country', label: '🌍 Quốc gia' },
+              { id: 'province', label: '🏙️ Tỉnh / TP' },
+              { id: 'district', label: '📍 Quận / Huyện' },
+              { id: 'ward', label: '🏘️ Xã / Phường' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -400,7 +412,7 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
           {displayedItems.length === 0 ? (
             <div className="py-12 text-center text-slate-500 text-xs">
               <Compass size={32} className="mx-auto mb-2 opacity-30 text-slate-400" />
-              Không tìm thấy địa giới hành chính phù hợp. Vui lòng nhập từ khóa khác (ví dụ: &quot;Gia Lai&quot;, &quot;Bình Định&quot;, &quot;Phú Thọ&quot;, &quot;Vân Hà&quot;).
+              Không tìm thấy địa giới hành chính phù hợp. Vui lòng nhập từ khóa khác (ví dụ: &quot;Việt Nam&quot;, &quot;Hoa Kỳ&quot;, &quot;Gia Lai&quot;, &quot;Hà Nội&quot;).
             </div>
           ) : (
             displayedItems.map((item) => (
@@ -411,13 +423,15 @@ export const AutoBoundaryModal: React.FC<{ onClose: () => void }> = ({ onClose }
               >
                 <div className="flex items-center gap-3">
                   <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
-                    item.level === 'province'
+                    item.level === 'country'
+                      ? 'bg-blue-500/20 text-cyan-300 border border-cyan-500/30'
+                      : item.level === 'province'
                       ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                       : item.level === 'district'
                       ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
                       : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                   }`}>
-                    {item.code ? `#${item.code}` : (item.level === 'province' ? 'Tỉnh' : item.level === 'district' ? 'Quận' : 'Xã')}
+                    {item.level === 'country' ? '🌍' : (item.code ? `#${item.code}` : (item.level === 'province' ? 'Tỉnh' : item.level === 'district' ? 'Quận' : 'Xã'))}
                   </div>
 
                   <div>
