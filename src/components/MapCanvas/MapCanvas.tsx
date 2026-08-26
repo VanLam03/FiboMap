@@ -146,11 +146,11 @@ function getFrameDimensions(ratio: AspectRatio): { w: number; h: number; label: 
 }
 
 // Place search using Instant Local Vietnam Database + OpenStreetMap Nominatim
-async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string }[]> {
+async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string; zoom?: number }[]> {
   const norm = removeVietnameseTones(query.trim());
   if (!norm) return [];
 
-  const localMatches: { display_name: string; lat: string; lon: string }[] = [];
+  const localMatches: { display_name: string; lat: string; lon: string; zoom?: number }[] = [];
 
   // Match 34 merged provinces & 63 provinces instantly with zero network latency
   for (const item of VIETNAM_34_MERGED_PROVINCES) {
@@ -163,6 +163,7 @@ async function searchPlace(query: string): Promise<{ display_name: string; lat: 
         display_name: `${item.name} (${item.mergedDetails || item.fullName})`,
         lat: String(item.coords[1]),
         lon: String(item.coords[0]),
+        zoom: item.zoom || 9.2,
       });
     }
   }
@@ -177,7 +178,12 @@ async function searchPlace(query: string): Promise<{ display_name: string; lat: 
       const combined = [...localMatches];
       for (const item of osmResults) {
         if (!combined.some(c => Math.abs(parseFloat(c.lat) - parseFloat(item.lat)) < 0.05 && Math.abs(parseFloat(c.lon) - parseFloat(item.lon)) < 0.05)) {
-          combined.push(item);
+          let zoom = 10.0;
+          const type = item.type || item.addresstype || '';
+          if (type === 'state' || type === 'province' || type === 'city') zoom = 9.2;
+          else if (type === 'county' || type === 'district') zoom = 10.2;
+          else zoom = 10.8;
+          combined.push({ ...item, zoom });
         }
       }
       return combined.slice(0, 8);
@@ -197,7 +203,7 @@ export const MapCanvas: React.FC = () => {
   const [showStylePicker, setShowStylePicker] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ display_name: string; lat: string; lon: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<{ display_name: string; lat: string; lon: string; zoom?: number }[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [coords, setCoords] = useState<{ lng: number; lat: number } | null>(null);
 
@@ -226,8 +232,8 @@ export const MapCanvas: React.FC = () => {
     setSearchLoading(false);
   }, []);
 
-  // Cinematic Zoom-out -> Zoom-in Camera Swoop (pure camera navigation, no timeline layer added)
-  const flyToLocationWithCinematicZoom = useCallback((lng: number, lat: number) => {
+  // Cinematic Zoom-out -> Zoom-in Camera Swoop (shows whole region, doesn't zoom in too close)
+  const flyToLocationWithCinematicZoom = useCallback((lng: number, lat: number, targetZoom = 9.8) => {
     const map = mapRef.current;
     if (!map) return;
 
@@ -235,32 +241,34 @@ export const MapCanvas: React.FC = () => {
     const currentZoom = map.getZoom();
     const distDeg = Math.hypot(lng - currentCenter.lng, lat - currentCenter.lat);
 
-    // If distance is far, execute Google Earth 2-stage cinematic swooping (Zoom out to high altitude -> Swoop in target)
+    const safeTargetZoom = Math.min(11.0, Math.max(8.5, targetZoom));
+
+    // If distance is far, execute 2-stage cinematic swooping (Zoom out overview -> Swoop in target region)
     if (distDeg > 0.4) {
       const midLng = (currentCenter.lng + lng) / 2;
       const midLat = (currentCenter.lat + lat) / 2;
-      const overviewZoom = Math.max(4.8, Math.min(currentZoom - 3.2, 7.2));
+      const overviewZoom = Math.max(4.5, Math.min(currentZoom - 2.8, 6.5));
 
-      // Phase 1: Camera pulls out into high altitude orbit
+      // Phase 1: Camera pulls out into high altitude overview
       map.flyTo({
         center: [midLng, midLat],
         zoom: overviewZoom,
-        pitch: 20,
+        pitch: 15,
         bearing: 0,
         duration: 900,
         curve: 1.8,
         essential: true,
       });
 
-      // Phase 2: Camera swoops down smoothly into the target location with 3D tilt
+      // Phase 2: Camera swoops down to show whole area nicely in frame
       setTimeout(() => {
         if (!mapRef.current) return;
         mapRef.current.flyTo({
           center: [lng, lat],
-          zoom: 14.0,
-          pitch: 35,
-          bearing: 15,
-          duration: 1500,
+          zoom: safeTargetZoom,
+          pitch: 20,
+          bearing: 0,
+          duration: 1400,
           curve: 1.42,
           essential: true,
         });
@@ -269,10 +277,10 @@ export const MapCanvas: React.FC = () => {
       // Nearby distance: direct cinematic flight
       map.flyTo({
         center: [lng, lat],
-        zoom: 14.0,
-        pitch: 35,
-        bearing: 15,
-        duration: 1600,
+        zoom: safeTargetZoom,
+        pitch: 20,
+        bearing: 0,
+        duration: 1500,
         speed: 0.9,
         curve: 1.6,
         essential: true,
@@ -282,9 +290,9 @@ export const MapCanvas: React.FC = () => {
     // Keep camera coordinates updated without adding anything to timeline
     setCurrentCamera({
       center: [lng, lat],
-      zoom: 14.0,
-      pitch: 35,
-      bearing: 15,
+      zoom: safeTargetZoom,
+      pitch: 20,
+      bearing: 0,
     });
 
     setShowSearch(false);
@@ -867,13 +875,13 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                     e.preventDefault();
                     if (searchResults.length > 0) {
                       const best = searchResults[0];
-                      flyToLocationWithCinematicZoom(parseFloat(best.lon), parseFloat(best.lat));
+                      flyToLocationWithCinematicZoom(parseFloat(best.lon), parseFloat(best.lat), best.zoom);
                     } else if (searchQuery.trim().length >= 1) {
                       setSearchLoading(true);
                       const results = await searchPlace(searchQuery.trim());
                       setSearchLoading(false);
                       if (results.length > 0) {
-                        flyToLocationWithCinematicZoom(parseFloat(results[0].lon), parseFloat(results[0].lat));
+                        flyToLocationWithCinematicZoom(parseFloat(results[0].lon), parseFloat(results[0].lat), results[0].zoom);
                       }
                     }
                   } else if (e.key === 'Escape') {
@@ -897,7 +905,7 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                 {searchResults.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => flyToLocationWithCinematicZoom(parseFloat(r.lon), parseFloat(r.lat))}
+                    onClick={() => flyToLocationWithCinematicZoom(parseFloat(r.lon), parseFloat(r.lat), r.zoom)}
                     className="flex items-start gap-2.5 w-full px-3 py-2.5 text-left hover:bg-[#1e293b] transition-colors border-b border-[#1e293b]/60 last:border-0 group"
                   >
                     <MapPin size={13} className="text-cyan-400 flex-shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
