@@ -13,7 +13,7 @@ import { useKeyframeCamera } from '../../hooks/useKeyframeCamera';
 import { useAreaDrawing } from '../../hooks/useAreaDrawing';
 import { DrawingCanvasOverlay } from './DrawingCanvasOverlay';
 import { AreaBoundingBoxOverlay } from './AreaBoundingBoxOverlay';
-import { identifyBoundaryFromClick } from '../../services/boundaryService';
+import { identifyBoundaryFromClick, removeVietnameseTones, VIETNAM_34_MERGED_PROVINCES } from '../../services/boundaryService';
 
 // Map style configurations
 const MAP_STYLES: Record<MapStyle, { label: string; icon: React.ReactNode }> = {
@@ -145,17 +145,48 @@ function getFrameDimensions(ratio: AspectRatio): { w: number; h: number; label: 
   }
 }
 
-// Place search using Nominatim
+// Place search using Instant Local Vietnam Database + OpenStreetMap Nominatim
 async function searchPlace(query: string): Promise<{ display_name: string; lat: string; lon: string }[]> {
+  const norm = removeVietnameseTones(query.trim());
+  if (!norm) return [];
+
+  const localMatches: { display_name: string; lat: string; lon: string }[] = [];
+
+  // Match 34 merged provinces & 63 provinces instantly with zero network latency
+  for (const item of VIETNAM_34_MERGED_PROVINCES) {
+    if (
+      removeVietnameseTones(item.name).includes(norm) ||
+      removeVietnameseTones(item.fullName || '').includes(norm) ||
+      removeVietnameseTones(item.mergedDetails || '').includes(norm)
+    ) {
+      localMatches.push({
+        display_name: `${item.name} (${item.mergedDetails || item.fullName})`,
+        lat: String(item.coords[1]),
+        lon: String(item.coords[0]),
+      });
+    }
+  }
+
   try {
     const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&accept-language=vi`,
-      { headers: { 'Accept-Language': 'vi,en' } }
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&accept-language=vi,en`,
+      { headers: { 'Accept-Language': 'vi,en', 'User-Agent': 'FiboMap-Cinematic-App/2.0' } }
     );
-    return res.json();
+    if (res.ok) {
+      const osmResults = await res.json();
+      const combined = [...localMatches];
+      for (const item of osmResults) {
+        if (!combined.some(c => Math.abs(parseFloat(c.lat) - parseFloat(item.lat)) < 0.05 && Math.abs(parseFloat(c.lon) - parseFloat(item.lon)) < 0.05)) {
+          combined.push(item);
+        }
+      }
+      return combined.slice(0, 8);
+    }
   } catch {
-    return [];
+    // Fallback to local matches if offline or rate-limited
   }
+
+  return localMatches;
 }
 
 export const MapCanvas: React.FC = () => {
@@ -188,21 +219,78 @@ export const MapCanvas: React.FC = () => {
   // Place search handler
   const handleSearch = useCallback(async (q: string) => {
     setSearchQuery(q);
-    if (!q.trim() || q.length < 2) { setSearchResults([]); return; }
+    if (!q.trim() || q.length < 1) { setSearchResults([]); return; }
     setSearchLoading(true);
     const results = await searchPlace(q);
     setSearchResults(results);
     setSearchLoading(false);
   }, []);
 
-  const flyToResult = useCallback((result: { lat: string; lon: string; display_name: string }) => {
-    const lng = parseFloat(result.lon);
-    const lat = parseFloat(result.lat);
-    mapRef.current?.flyTo({ center: [lng, lat], zoom: 13, duration: 1500 });
+  // Cinematic Zoom-out -> Zoom-in Camera Swoop (pure camera navigation, no timeline layer added)
+  const flyToLocationWithCinematicZoom = useCallback((lng: number, lat: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentCenter = map.getCenter();
+    const currentZoom = map.getZoom();
+    const distDeg = Math.hypot(lng - currentCenter.lng, lat - currentCenter.lat);
+
+    // If distance is far, execute Google Earth 2-stage cinematic swooping (Zoom out to high altitude -> Swoop in target)
+    if (distDeg > 0.4) {
+      const midLng = (currentCenter.lng + lng) / 2;
+      const midLat = (currentCenter.lat + lat) / 2;
+      const overviewZoom = Math.max(4.8, Math.min(currentZoom - 3.2, 7.2));
+
+      // Phase 1: Camera pulls out into high altitude orbit
+      map.flyTo({
+        center: [midLng, midLat],
+        zoom: overviewZoom,
+        pitch: 20,
+        bearing: 0,
+        duration: 900,
+        curve: 1.8,
+        essential: true,
+      });
+
+      // Phase 2: Camera swoops down smoothly into the target location with 3D tilt
+      setTimeout(() => {
+        if (!mapRef.current) return;
+        mapRef.current.flyTo({
+          center: [lng, lat],
+          zoom: 14.0,
+          pitch: 35,
+          bearing: 15,
+          duration: 1500,
+          curve: 1.42,
+          essential: true,
+        });
+      }, 850);
+    } else {
+      // Nearby distance: direct cinematic flight
+      map.flyTo({
+        center: [lng, lat],
+        zoom: 14.0,
+        pitch: 35,
+        bearing: 15,
+        duration: 1600,
+        speed: 0.9,
+        curve: 1.6,
+        essential: true,
+      });
+    }
+
+    // Keep camera coordinates updated without adding anything to timeline
+    setCurrentCamera({
+      center: [lng, lat],
+      zoom: 14.0,
+      pitch: 35,
+      bearing: 15,
+    });
+
     setShowSearch(false);
     setSearchResults([]);
     setSearchQuery('');
-  }, []);
+  }, [setCurrentCamera]);
 
   // Calculate video preview frame box
   useEffect(() => {
@@ -774,8 +862,28 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                 type="text"
                 value={searchQuery}
                 onChange={(e) => handleSearch(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (searchResults.length > 0) {
+                      const best = searchResults[0];
+                      flyToLocationWithCinematicZoom(parseFloat(best.lon), parseFloat(best.lat));
+                    } else if (searchQuery.trim().length >= 1) {
+                      setSearchLoading(true);
+                      const results = await searchPlace(searchQuery.trim());
+                      setSearchLoading(false);
+                      if (results.length > 0) {
+                        flyToLocationWithCinematicZoom(parseFloat(results[0].lon), parseFloat(results[0].lat));
+                      }
+                    }
+                  } else if (e.key === 'Escape') {
+                    setShowSearch(false);
+                    setSearchResults([]);
+                    setSearchQuery('');
+                  }
+                }}
                 placeholder="Tìm địa điểm trên bản đồ..."
-                className="bg-transparent text-white text-xs outline-none w-48 placeholder:text-slate-500"
+                className="bg-transparent text-white text-xs outline-none w-52 placeholder:text-slate-500"
               />
               {searchLoading && (
                 <div className="w-3 h-3 rounded-full border border-blue-400 border-t-transparent animate-spin flex-shrink-0" />
@@ -785,15 +893,15 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
               </button>
             </div>
             {searchResults.length > 0 && (
-              <div className="absolute top-10 right-0 w-72 bg-[#0f172a]/98 backdrop-blur-md border border-[#1e293b] rounded-2xl shadow-2xl overflow-hidden z-50">
+              <div className="absolute top-10 right-0 w-80 bg-[#0f172a]/98 backdrop-blur-md border border-[#1e293b] rounded-2xl shadow-2xl overflow-hidden z-50 max-h-72 overflow-y-auto custom-scrollbar">
                 {searchResults.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => flyToResult(r)}
-                    className="flex items-start gap-2.5 w-full px-3 py-2.5 text-left hover:bg-[#1e293b] transition-colors border-b border-[#1e293b]/60 last:border-0"
+                    onClick={() => flyToLocationWithCinematicZoom(parseFloat(r.lon), parseFloat(r.lat))}
+                    className="flex items-start gap-2.5 w-full px-3 py-2.5 text-left hover:bg-[#1e293b] transition-colors border-b border-[#1e293b]/60 last:border-0 group"
                   >
-                    <MapPin size={12} className="text-blue-400 flex-shrink-0 mt-0.5" />
-                    <span className="text-xs text-slate-300 leading-snug line-clamp-2">{r.display_name}</span>
+                    <MapPin size={13} className="text-cyan-400 flex-shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
+                    <span className="text-xs text-slate-300 group-hover:text-cyan-300 leading-snug line-clamp-2">{r.display_name}</span>
                   </button>
                 ))}
               </div>
