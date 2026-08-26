@@ -58,6 +58,14 @@ interface ProjectStore extends ProjectState {
   // Template loader
   loadTemplate: (templateId: string) => void;
 
+  // Copy / Paste
+  copySelectedLayers: () => void;
+  pasteCopiedLayers: () => void;
+
+  // LngLat & Arrow updates for Drag & Drop
+  updateLayerLngLat: (id: string, lngLat: [number, number]) => void;
+  updateArrowCoords: (id: string, from: [number, number], to: [number, number]) => void;
+
   // Import / Export State
   exportProjectJSON: () => string;
   importProjectJSON: (jsonStr: string) => boolean;
@@ -553,6 +561,88 @@ export const useProjectStore = create<ProjectStore>()(
         return false;
       }
     },
+
+    copySelectedLayers: () => {
+      const state = get();
+      const selected = state.layers.filter(l => l.selected || l.id === state.selectedLayerId);
+      if (selected.length > 0) {
+        (state as any)._clipboard = JSON.parse(JSON.stringify(selected));
+      }
+    },
+
+    pasteCopiedLayers: () => {
+      const state = get();
+      const clipboard: TimelineLayer[] = (state as any)._clipboard || [];
+      if (clipboard.length > 0) {
+        set((s: any) => {
+          if (!s._past) s._past = [];
+          s._past.push({
+            layers: JSON.parse(JSON.stringify(s.layers)),
+            cameraKeyframes: JSON.parse(JSON.stringify(s.cameraKeyframes)),
+            duration: s.duration,
+          });
+
+          // Unselect current layers
+          s.layers.forEach((l: any) => { l.selected = false; });
+
+          const newPasted: TimelineLayer[] = [];
+          const minStart = Math.min(...clipboard.map(c => c.startTime));
+          const timeOffset = s.playhead - minStart;
+
+          clipboard.forEach((c) => {
+            const newLayerId = `layer-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+            const dur = c.endTime - c.startTime;
+            let newStart = c.startTime + timeOffset;
+            if (newStart < 0) newStart = 0;
+            let newEnd = newStart + dur;
+            if (newEnd > s.duration) {
+              newEnd = s.duration;
+              newStart = Math.max(0, newEnd - dur);
+            }
+
+            const cloned: TimelineLayer = {
+              ...JSON.parse(JSON.stringify(c)),
+              id: newLayerId,
+              name: `${c.name} (Copy)`,
+              startTime: Number(newStart.toFixed(2)),
+              endTime: Number(newEnd.toFixed(2)),
+              selected: true,
+            };
+            newPasted.push(cloned);
+          });
+
+          s.layers.unshift(...newPasted);
+          s.selectedLayerId = newPasted[0]?.id || null;
+        });
+      }
+    },
+
+    updateLayerLngLat: (id, lngLat) =>
+      set((s) => {
+        const layer = s.layers.find((l) => l.id === id);
+        if (layer) {
+          if (layer.calloutData) layer.calloutData.lngLat = lngLat;
+          if (layer.widgetData) layer.widgetData.lngLat = lngLat;
+          if (layer.objectData) layer.objectData.lngLat = lngLat;
+          if (layer.textData) {
+            layer.textData.lngLat = lngLat;
+            layer.textData.pinToMap = true;
+          }
+          if (layer.counterData) {
+            layer.counterData.lngLat = lngLat;
+            layer.counterData.pinToMap = true;
+          }
+        }
+      }),
+
+    updateArrowCoords: (id, from, to) =>
+      set((s) => {
+        const layer = s.layers.find((l) => l.id === id);
+        if (layer && layer.arrowData) {
+          layer.arrowData.from = from;
+          layer.arrowData.to = to;
+        }
+      }),
 
     // History snapshots
     undo: () => {

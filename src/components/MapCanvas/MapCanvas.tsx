@@ -309,6 +309,52 @@ export const MapCanvas: React.FC = () => {
     setSearchLoading(false);
   }, []);
 
+  // Handle dragging utility elements on the map canvas
+  const handleStartDragElement = (
+    e: React.MouseEvent,
+    layerId: string,
+    currentLngLat: [number, number],
+    isArrowHandle?: 'from' | 'to',
+    arrowOther?: [number, number]
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    selectLayer(layerId);
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!containerRef.current) return;
+      const mapCanvasEl = containerRef.current.querySelector('.maplibregl-canvas');
+      if (!mapCanvasEl) return;
+      const rect = mapCanvasEl.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      const lngLatObj = map.unproject([x, y]);
+      const newLngLat: [number, number] = [
+        Number(lngLatObj.lng.toFixed(5)),
+        Number(lngLatObj.lat.toFixed(5)),
+      ];
+
+      if (isArrowHandle === 'from' && arrowOther) {
+        useProjectStore.getState().updateArrowCoords(layerId, newLngLat, arrowOther);
+      } else if (isArrowHandle === 'to' && arrowOther) {
+        useProjectStore.getState().updateArrowCoords(layerId, arrowOther, newLngLat);
+      } else {
+        useProjectStore.getState().updateLayerLngLat(layerId, newLngLat);
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
   // Cinematic Flight & fitBounds to frame the whole region perfectly without manual zoom guessing
   const flyToLocationWithCinematicZoom = useCallback((result: PlaceSearchResult) => {
     const map = mapRef.current;
@@ -426,6 +472,7 @@ export const MapCanvas: React.FC = () => {
       zoom: currentCamera.zoom || 11,
       bearing: currentCamera.bearing || 0,
       pitch: currentCamera.pitch || 0,
+      pixelRatio: typeof window !== 'undefined' ? (window.devicePixelRatio || 2) : 2,
       attributionControl: false,
       renderWorldCopies: false,
     });
@@ -653,6 +700,30 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
+
+    // ── Cleanup removed layers/sources from MapLibre instance ──
+    const currentLayerIds = new Set(layers.map(l => l.id));
+    const style = map.getStyle();
+    if (style && style.layers) {
+      style.layers.forEach((ml) => {
+        if (ml.id.startsWith('fill-') || ml.id.startsWith('line-') || ml.id.startsWith('extrude-')) {
+          const layerId = ml.id.replace(/^(fill-|line-|extrude-)/, '');
+          if (!currentLayerIds.has(layerId)) {
+            if (map.getLayer(ml.id)) map.removeLayer(ml.id);
+          }
+        }
+      });
+    }
+    if (style && style.sources) {
+      Object.keys(style.sources).forEach((srcId) => {
+        if (srcId.startsWith('source-') || srcId.startsWith('border-source-')) {
+          const layerId = srcId.replace(/^(source-|border-source-)/, '');
+          if (!currentLayerIds.has(layerId)) {
+            if (map.getSource(srcId)) map.removeSource(srcId);
+          }
+        }
+      });
+    }
 
     layers.forEach((layer) => {
       const isVisible = layer.visible && playhead >= layer.startTime && playhead <= layer.endTime;
@@ -925,15 +996,35 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
     });
   }, [layers, playhead, mapReady, isPlaying]);
 
-  const handleZoomIn = () => mapRef.current?.zoomIn({ duration: 300 });
-  const handleZoomOut = () => mapRef.current?.zoomOut({ duration: 300 });
+  const handleZoomIn = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({
+      zoom: map.getZoom() + 1,
+      duration: 600,
+      easing: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+    });
+  };
+
+  const handleZoomOut = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({
+      zoom: map.getZoom() - 1,
+      duration: 600,
+      easing: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+    });
+  };
+
   const handleRecenter = () => {
-    mapRef.current?.easeTo({
+    mapRef.current?.flyTo({
       center: [106.6602, 10.7769],
       zoom: 11,
       bearing: 0,
       pitch: 0,
-      duration: 800,
+      duration: 1200,
+      curve: 1.42,
+      essential: true,
     });
   };
 
@@ -1233,16 +1324,31 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
         {/* Real-time Drawing Canvas Overlay (Matches Hình 2 and generates Hình 1) */}
         <DrawingCanvasOverlay map={mapRef.current} mapContainerRect={null} />
 
-        {/* Dynamic DOM Overlays (Callouts, Texts, Counters, Widgets, Flags) */}
+        {/* Dynamic DOM Overlays (Callouts, Texts, Counters, Widgets, Flags, Arrows) */}
         <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
           {activeOverlayLayers.map((layer) => {
+            const isSelected = Boolean(layer.selected || selectedLayerId === layer.id);
+
+            // ── CALLOUT OVERLAY ──────────────────────────────────────────
             if (layer.type === 'callout' && layer.calloutData) {
+              const pos = layer.calloutData.lngLat || currentCamera.center || [106.6602, 10.7769];
+              const p = mapRef.current?.project(pos);
+              if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+
               return (
                 <div
                   key={layer.id}
-                  className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto animate-bounce-short"
+                  className="absolute pointer-events-auto cursor-move select-none animate-bounce-short z-20"
+                  style={{
+                    left: `${p.x}px`,
+                    top: `${p.y}px`,
+                    transform: 'translate(-50%, -100%)',
+                  }}
+                  onMouseDown={(e) => handleStartDragElement(e, layer.id, pos)}
                 >
-                  <div className="bg-[#0f172a]/95 backdrop-blur-md border-2 border-amber-500/80 rounded-2xl p-3.5 shadow-2xl text-white min-w-[240px] flex flex-col gap-1.5">
+                  <div className={`bg-[#0f172a]/95 backdrop-blur-md border-2 rounded-2xl p-3.5 shadow-2xl text-white min-w-[240px] flex flex-col gap-1.5 transition-all ${
+                    isSelected ? 'border-cyan-400 ring-2 ring-cyan-500/50 shadow-[0_0_20px_rgba(6,182,212,0.4)]' : 'border-amber-500/80'
+                  }`}>
                     <div className="flex items-center gap-2">
                       <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
                         {layer.calloutData.theme === 'real_estate' ? <Building size={16} /> :
@@ -1269,14 +1375,27 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
               );
             }
 
+            // ── TEXT OVERLAY ─────────────────────────────────────────────
             if (layer.type === 'text' && layer.textData) {
+              const pos = layer.textData.lngLat || currentCamera.center || [106.6602, 10.7769];
+              const p = mapRef.current?.project(pos);
+              if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+
               return (
                 <div
                   key={layer.id}
-                  className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none"
+                  className={`absolute text-center pointer-events-auto cursor-move select-none p-2 rounded-xl transition-all z-20 ${
+                    isSelected ? 'border border-cyan-400/80 bg-cyan-950/20 shadow-[0_0_15px_rgba(6,182,212,0.3)]' : ''
+                  }`}
+                  style={{
+                    left: `${p.x}px`,
+                    top: `${p.y}px`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  onMouseDown={(e) => handleStartDragElement(e, layer.id, pos)}
                 >
                   <h2
-                    className="font-black tracking-wider uppercase drop-shadow-2xl animate-pulse"
+                    className="font-black tracking-wider uppercase drop-shadow-2xl animate-pulse whitespace-nowrap"
                     style={{
                       fontSize: `${layer.textData.fontSize || 32}px`,
                       color: layer.textData.color || '#ffffff',
@@ -1289,16 +1408,30 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
               );
             }
 
+            // ── COUNTER OVERLAY ──────────────────────────────────────────
             if (layer.type === 'counter' && layer.counterData) {
+              const pos = layer.counterData.lngLat || currentCamera.center || [106.6602, 10.7769];
+              const p = mapRef.current?.project(pos);
+              if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+
               const progress = Math.min(1, Math.max(0, (playhead - layer.startTime) / (layer.endTime - layer.startTime)));
               const currentVal = layer.counterData.startValue + progress * (layer.counterData.endValue - layer.counterData.startValue);
+
               return (
                 <div
                   key={layer.id}
-                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none"
+                  className={`absolute text-center pointer-events-auto cursor-move select-none p-2 rounded-xl transition-all z-20 ${
+                    isSelected ? 'border border-cyan-400/80 bg-cyan-950/20 shadow-[0_0_15px_rgba(6,182,212,0.3)]' : ''
+                  }`}
+                  style={{
+                    left: `${p.x}px`,
+                    top: `${p.y}px`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  onMouseDown={(e) => handleStartDragElement(e, layer.id, pos)}
                 >
                   <div
-                    className="font-black font-mono tracking-widest drop-shadow-2xl"
+                    className="font-black font-mono tracking-widest drop-shadow-2xl whitespace-nowrap"
                     style={{
                       fontSize: `${layer.counterData.fontSize || 48}px`,
                       color: layer.counterData.color || '#f59e0b',
@@ -1311,11 +1444,24 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
               );
             }
 
+            // ── WIDGET / RADAR OVERLAY ───────────────────────────────────
             if (layer.type === 'widget' && layer.widgetData) {
+              const pos = layer.widgetData.lngLat || currentCamera.center || [106.6602, 10.7769];
+              const p = mapRef.current?.project(pos);
+              if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+
               return (
                 <div
                   key={layer.id}
-                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto"
+                  className={`absolute pointer-events-auto cursor-move select-none z-20 ${
+                    isSelected ? 'ring-2 ring-cyan-400 rounded-full' : ''
+                  }`}
+                  style={{
+                    left: `${p.x}px`,
+                    top: `${p.y}px`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  onMouseDown={(e) => handleStartDragElement(e, layer.id, pos)}
                 >
                   {layer.widgetData.isRadar ? (
                     <div className="relative flex items-center justify-center">
@@ -1326,18 +1472,31 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                   ) : (
                     <div className="flex items-center gap-2 bg-[#0f172a]/90 backdrop-blur-md border border-blue-500/80 px-3 py-1.5 rounded-full shadow-xl">
                       <Radio size={14} className="text-blue-400 animate-spin" />
-                      <span className="text-xs font-bold text-white">{layer.widgetData.label}</span>
+                      <span className="text-xs font-bold text-white whitespace-nowrap">{layer.widgetData.label}</span>
                     </div>
                   )}
                 </div>
               );
             }
 
+            // ── OBJECT & FLAG OVERLAY ────────────────────────────────────
             if (layer.type === 'object' && layer.objectData) {
+              const pos = layer.objectData.lngLat || currentCamera.center || [106.6602, 10.7769];
+              const p = mapRef.current?.project(pos);
+              if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+
               return (
                 <div
                   key={layer.id}
-                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto"
+                  className={`absolute pointer-events-auto cursor-move select-none z-20 ${
+                    isSelected ? 'ring-2 ring-cyan-400 rounded-2xl shadow-cyan-500/40' : ''
+                  }`}
+                  style={{
+                    left: `${p.x}px`,
+                    top: `${p.y}px`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  onMouseDown={(e) => handleStartDragElement(e, layer.id, pos)}
                 >
                   {layer.objectData.objectType === 'flag' ? (
                     <div className="flex flex-col items-center">
@@ -1348,7 +1507,7 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                          layer.objectData.countryName?.includes('Hàn Quốc') ? '🇰🇷' :
                          layer.objectData.countryName?.includes('Pháp') ? '🇫🇷' : '🚩'}
                       </div>
-                      <span className="bg-black/80 px-2 py-0.5 rounded text-[10px] font-bold text-white mt-1 border border-white/20">
+                      <span className="bg-black/80 px-2 py-0.5 rounded text-[10px] font-bold text-white mt-1 border border-white/20 whitespace-nowrap">
                         {layer.objectData.countryName}
                       </span>
                     </div>
@@ -1357,11 +1516,105 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
                       {layer.objectData.objectType === 'airplane' ? <Plane size={24} className="text-blue-400" /> :
                        layer.objectData.objectType === 'car' ? <Car size={24} className="text-amber-400" /> :
                        <User size={24} className="text-emerald-400" />}
-                      <span className="text-xs font-bold text-white">{layer.name}</span>
+                      <span className="text-xs font-bold text-white whitespace-nowrap">{layer.name}</span>
                     </div>
                   )}
                 </div>
               );
+            }
+
+            // ── ARROW TOOL OVERLAY (Curved Glowing Neon Arrow) ───────────
+            if (layer.type === 'arrow' && layer.arrowData) {
+              const fromCoord = layer.arrowData.from || [currentCamera.center[0] - 0.04, currentCamera.center[1] - 0.04];
+              const toCoord = layer.arrowData.to || currentCamera.center || [106.6602, 10.7769];
+              const map = mapRef.current;
+              const p1 = map?.project(fromCoord);
+              const p2 = map?.project(toCoord);
+
+              if (p1 && p2 && !isNaN(p1.x) && !isNaN(p2.x)) {
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const len = Math.hypot(dx, dy);
+                const midX = (p1.x + p2.x) / 2;
+                const midY = (p1.y + p2.y) / 2;
+                const normalX = len > 0 ? -dy / len : 0;
+                const normalY = len > 0 ? dx / len : 0;
+                const curv = (layer.arrowData.curvature ?? 0.2) * len;
+                const cx = midX + normalX * curv;
+                const cy = midY + normalY * curv;
+                const arrowColor = layer.arrowData.color || '#f59e0b';
+                const strokeW = layer.arrowData.width || 4;
+
+                return (
+                  <div key={`arrow-${layer.id}`} className="absolute inset-0 pointer-events-none z-20">
+                    <svg className="w-full h-full overflow-visible">
+                      <defs>
+                        <marker
+                          id={`arrowhead-${layer.id}`}
+                          markerWidth={layer.arrowData.headSize || 14}
+                          markerHeight={layer.arrowData.headSize || 14}
+                          refX="7"
+                          refY="3.5"
+                          orient="auto"
+                        >
+                          <polygon points="0 0, 10 3.5, 0 7" fill={arrowColor} />
+                        </marker>
+                        <filter id={`arrow-glow-${layer.id}`} x="-30%" y="-30%" width="160%" height="160%">
+                          <feGaussianBlur stdDeviation="5" result="blur" />
+                          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                        </filter>
+                      </defs>
+
+                      {/* Neon glow blur line */}
+                      <path
+                        d={`M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`}
+                        fill="none"
+                        stroke={arrowColor}
+                        strokeWidth={strokeW + 8}
+                        strokeOpacity="0.4"
+                        filter={`url(#arrow-glow-${layer.id})`}
+                      />
+
+                      {/* Core sharp arrow line */}
+                      <path
+                        d={`M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`}
+                        fill="none"
+                        stroke={arrowColor}
+                        strokeWidth={strokeW}
+                        strokeLinecap="round"
+                        markerEnd={`url(#arrowhead-${layer.id})`}
+                        className="pointer-events-auto cursor-pointer"
+                        onClick={() => selectLayer(layer.id)}
+                      />
+                    </svg>
+
+                    {/* Interactive drag handles when selected */}
+                    {isSelected && (
+                      <>
+                        {/* Start handle */}
+                        <div
+                          className="absolute w-5 h-5 -translate-x-1/2 -translate-y-1/2 bg-blue-600 rounded-full border-2 border-white shadow-2xl pointer-events-auto cursor-crosshair flex items-center justify-center hover:scale-125 transition-transform z-30"
+                          style={{ left: `${p1.x}px`, top: `${p1.y}px` }}
+                          onMouseDown={(e) => handleStartDragElement(e, layer.id, fromCoord, 'from', toCoord)}
+                          title="Kéo điểm bắt đầu mũi tên"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                        </div>
+
+                        {/* End handle */}
+                        <div
+                          className="absolute w-5 h-5 -translate-x-1/2 -translate-y-1/2 bg-amber-500 rounded-full border-2 border-white shadow-2xl pointer-events-auto cursor-crosshair flex items-center justify-center hover:scale-125 transition-transform z-30"
+                          style={{ left: `${p2.x}px`, top: `${p2.y}px` }}
+                          onMouseDown={(e) => handleStartDragElement(e, layer.id, toCoord, 'to', fromCoord)}
+                          title="Kéo điểm đích mũi tên"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              }
             }
 
             // Animated Vehicle Marker on Route

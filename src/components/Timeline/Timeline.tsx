@@ -437,6 +437,7 @@ export const Timeline: React.FC = () => {
     timelineZoom, setTimelineZoom,
     isKeyframeCameraMode, setKeyframeCameraMode,
     undo, redo, deleteLayer, deleteSelectedLayers,
+    copySelectedLayers, pasteCopiedLayers,
   } = useProjectStore();
 
   const trackAreaRef = useRef<HTMLDivElement>(null);
@@ -551,20 +552,32 @@ export const Timeline: React.FC = () => {
         selectAllLayers();
       }
 
+      // Ctrl+C -> Copy selected layers
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
+        e.preventDefault();
+        copySelectedLayers();
+      }
+
+      // Ctrl+V -> Paste copied layers
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
+        e.preventDefault();
+        pasteCopiedLayers();
+      }
+
       if (e.code === 'Space') { e.preventDefault(); setIsPlaying(!isPlaying); }
       if (e.code === 'ArrowLeft') setPlayhead(Math.max(0, playhead - (e.shiftKey ? 1 : 1 / 30)));
       if (e.code === 'ArrowRight') setPlayhead(Math.min(duration, playhead + (e.shiftKey ? 1 : 1 / 30)));
       if (e.code === 'Home') setPlayhead(0);
       if (e.code === 'End') setPlayhead(duration);
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); undo(); }
-      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redo(); }
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyY' || (e.shiftKey && e.code === 'KeyZ'))) { e.preventDefault(); redo(); }
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyB') { e.preventDefault(); handleCut(); }
       if (e.code === 'Delete' || e.code === 'Backspace') { handleDelete(); }
     };
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isPlaying, playhead, duration, handleCut, handleDelete, undo, redo, selectAllLayers, setIsPlaying, setPlayhead]);
+  }, [isPlaying, playhead, duration, handleCut, handleDelete, undo, redo, selectAllLayers, copySelectedLayers, pasteCopiedLayers, setIsPlaying, setPlayhead]);
 
   // Handle Layer Selection Click
   const handleLayerClick = (id: string, e: React.MouseEvent) => {
