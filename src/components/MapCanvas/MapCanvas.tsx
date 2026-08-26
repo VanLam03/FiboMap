@@ -5,7 +5,7 @@ import {
   Plus, Minus, Compass, Info, Layers, Search,
   MessageSquare, Globe, Moon, Scroll, Route, Mountain, Sun, Satellite,
   MapPin, Building, Share2, Phone, Plane, Car, User, Ship, Radio,
-  X, Navigation2, Bike
+  X, Navigation2, Bike, Eye, Map as MapIcon, RotateCcw
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import type { MapStyle, AspectRatio } from '../../types/project.types';
@@ -272,12 +272,17 @@ export const MapCanvas: React.FC = () => {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [showMapSettings, setShowMapSettings] = useState(false);
   const [showStylePicker, setShowStylePicker] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [coords, setCoords] = useState<{ lng: number; lat: number } | null>(null);
+
+  const [mapPitch, setMapPitch] = useState(0);
+  const [mapBearing, setMapBearing] = useState(0);
+  const [showLabels, setShowLabels] = useState(true);
 
   const [mapMoveTick, setMapMoveTick] = useState(0);
 
@@ -430,13 +435,22 @@ export const MapCanvas: React.FC = () => {
       map.resize();
     });
 
+    map.on('move', () => {
+      setMapBearing(Math.round(((map.getBearing() % 360) + 360) % 360));
+      setMapPitch(Math.round(map.getPitch()));
+    });
+
     map.on('moveend', () => {
       const c = map.getCenter();
+      const b = map.getBearing();
+      const p = map.getPitch();
+      setMapBearing(Math.round(((b % 360) + 360) % 360));
+      setMapPitch(Math.round(p));
       setCurrentCamera({
         center: [c.lng, c.lat],
         zoom: map.getZoom(),
-        bearing: map.getBearing(),
-        pitch: map.getPitch(),
+        bearing: b,
+        pitch: p,
       });
     });
 
@@ -933,8 +947,181 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
       ref={containerRef}
       className="flex-1 flex flex-col items-center justify-center bg-[#060d1a] relative overflow-hidden p-4 select-none"
     >
-      {/* Top overlay: layer list + search + comment icons */}
-      <div className="absolute top-3 right-3 flex items-center gap-1.5 z-20">
+      {/* Top overlay: map view settings + search */}
+      <div className="absolute top-3 right-3 flex items-center gap-1.5 z-30">
+        {/* Layer / Map View Settings button */}
+        <div className="relative">
+          <button
+            onClick={() => {
+              setShowMapSettings(!showMapSettings);
+              if (showSearch) setShowSearch(false);
+            }}
+            className={`w-8 h-8 rounded-xl backdrop-blur-md border flex items-center justify-center transition-all shadow-md ${
+              showMapSettings
+                ? 'bg-blue-600/30 text-cyan-400 border-cyan-500/60 shadow-[0_0_15px_rgba(6,182,212,0.35)]'
+                : 'bg-[#0f172a]/90 text-slate-400 border-[#1e293b] hover:text-white hover:border-slate-600'
+            }`}
+            title="Cài đặt kiểu bản đồ & Góc nhìn 2D/3D"
+          >
+            <Layers size={14} />
+          </button>
+
+          {/* Map View & 3D Settings Popover (Matches UI) */}
+          {showMapSettings && (
+            <div className="absolute top-10 right-0 w-[340px] bg-[#0c1424]/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-4 shadow-2xl z-50 text-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+              {/* Row 1: Map Styles (Vệ tinh, Đường, Chi tiết) + 2D/3D Switch */}
+              <div className="flex items-center justify-between gap-1.5">
+                {/* Map style buttons */}
+                <div className="flex items-center gap-1 bg-[#131d31] p-1 rounded-xl border border-slate-700/60">
+                  <button
+                    onClick={() => setMapStyle(showLabels ? 'google-satellite' : 'satellite')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      mapStyle === 'google-satellite' || mapStyle === 'satellite'
+                        ? 'bg-[#1e2e4f] text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Eye size={12} />
+                    <span>Vệ tinh</span>
+                  </button>
+                  <button
+                    onClick={() => setMapStyle('google-streets')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      mapStyle === 'google-streets' || mapStyle === 'streets'
+                        ? 'bg-[#1e2e4f] text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Route size={12} />
+                    <span>Đường</span>
+                  </button>
+                  <button
+                    onClick={() => setMapStyle('terrain')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      mapStyle === 'terrain'
+                        ? 'bg-[#1e2e4f] text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <MapIcon size={12} />
+                    <span>Chi tiết</span>
+                  </button>
+                </div>
+
+                {/* 2D / 3D Segmented Switch */}
+                <div className="flex items-center bg-[#131d31] p-1 rounded-xl border border-slate-700/60">
+                  <button
+                    onClick={() => {
+                      mapRef.current?.easeTo({ pitch: 0, duration: 600 });
+                      setMapPitch(0);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      mapPitch <= 5
+                        ? 'bg-[#1e2e4f] text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    2D
+                  </button>
+                  <button
+                    onClick={() => {
+                      mapRef.current?.easeTo({ pitch: 45, duration: 600 });
+                      setMapPitch(45);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      mapPitch > 5
+                        ? 'bg-[#1e2e4f] text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    3D
+                  </button>
+                </div>
+              </div>
+
+              {/* Row 2: Tên địa danh (Place Labels Toggle) */}
+              <div className="flex items-center justify-between pt-1 border-t border-slate-800/80">
+                <span className="text-sm font-semibold text-slate-200">Tên địa danh</span>
+                <button
+                  onClick={() => {
+                    const next = !showLabels;
+                    setShowLabels(next);
+                    if (mapStyle === 'satellite' || mapStyle === 'google-satellite') {
+                      setMapStyle(next ? 'google-satellite' : 'satellite');
+                    }
+                  }}
+                  className={`px-4 py-1 rounded-xl text-xs font-bold transition-all ${
+                    showLabels
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 shadow-[0_0_12px_rgba(6,182,212,0.25)]'
+                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                  }`}
+                >
+                  {showLabels ? 'Bật' : 'Tắt'}
+                </button>
+              </div>
+
+              {/* Row 3: Xoay (Bearing Slider) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-200 text-sm">Xoay</span>
+                  <span className="font-bold font-mono text-cyan-300 text-sm">{mapBearing}°</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="360"
+                  value={mapBearing}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    setMapBearing(val);
+                    mapRef.current?.setBearing(val);
+                  }}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                />
+              </div>
+
+              {/* Row 4: Nghiêng (Pitch Slider) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-200 text-sm">Nghiêng</span>
+                  <span className="font-bold font-mono text-cyan-300 text-sm">{mapPitch}°</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="75"
+                  value={mapPitch}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    setMapPitch(val);
+                    mapRef.current?.setPitch(val);
+                  }}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                />
+              </div>
+
+              {/* Row 5: Reset view button */}
+              <div>
+                <button
+                  onClick={() => {
+                    mapRef.current?.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+                    setMapPitch(0);
+                    setMapBearing(0);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#162238] hover:bg-[#20304e] text-xs font-semibold text-slate-200 border border-slate-700 hover:border-cyan-500/40 transition-all shadow-sm"
+                >
+                  Đặt lại góc nhìn
+                </button>
+              </div>
+
+              {/* Row 6: Tip note */}
+              <p className="text-[11px] text-slate-400 leading-relaxed pt-2 border-t border-slate-800/80">
+                Mẹo: giữ chuột phải và kéo trên map để xoay tự do
+              </p>
+            </div>
+          )}
+        </div>
+
         {/* Place Search */}
         {showSearch ? (
           <div className="relative">
@@ -992,22 +1179,20 @@ function getVehicleStateAlongPath(coords: [number, number][], progress: number):
           </div>
         ) : (
           <button
-            onClick={() => setShowSearch(true)}
+            onClick={() => {
+              setShowSearch(true);
+              if (showMapSettings) setShowMapSettings(false);
+            }}
             className="w-8 h-8 rounded-xl bg-[#0f172a]/90 backdrop-blur-md border border-[#1e293b] flex items-center justify-center text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all shadow-md"
             title="Tìm kiếm địa điểm"
           >
             <Search size={14} />
           </button>
         )}
+
         <button
           className="w-8 h-8 rounded-xl bg-[#0f172a]/90 backdrop-blur-md border border-[#1e293b] flex items-center justify-center text-slate-400 hover:text-white transition-all shadow-md"
-          title="Danh sách lớp"
-        >
-          <Layers size={14} />
-        </button>
-        <button
-          className="w-8 h-8 rounded-xl bg-[#0f172a]/90 backdrop-blur-md border border-[#1e293b] flex items-center justify-center text-slate-400 hover:text-white transition-all shadow-md"
-          title="Bình luận"
+          title="Bình luận & Ghi chú"
         >
           <MessageSquare size={14} />
         </button>
