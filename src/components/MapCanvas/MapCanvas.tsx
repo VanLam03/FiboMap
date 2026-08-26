@@ -13,7 +13,7 @@ import { useKeyframeCamera } from '../../hooks/useKeyframeCamera';
 import { useAreaDrawing } from '../../hooks/useAreaDrawing';
 import { DrawingCanvasOverlay } from './DrawingCanvasOverlay';
 import { AreaBoundingBoxOverlay } from './AreaBoundingBoxOverlay';
-import { identifyBoundaryFromClick, removeVietnameseTones, VIETNAM_34_MERGED_PROVINCES } from '../../services/boundaryService';
+import { identifyBoundaryFromClick, removeVietnameseTones, VIETNAM_34_MERGED_PROVINCES, VIETNAM_63_PROVINCES } from '../../services/boundaryService';
 
 // Map style configurations
 const MAP_STYLES: Record<MapStyle, { label: string; icon: React.ReactNode }> = {
@@ -152,44 +152,119 @@ export interface PlaceSearchResult {
   bbox?: [number, number, number, number]; // [west, south, east, north]
 }
 
-// Real-time Dynamic Geocoding Search (100% accurate worldwide with boundingbox)
+// Multi-engine Place Geocoding Search (Instant Local 63 Provinces + Photon + Nominatim)
 async function searchPlace(query: string): Promise<PlaceSearchResult[]> {
   const clean = query.trim();
-  if (!clean) return [];
+  const norm = removeVietnameseTones(clean);
+  if (!clean || !norm) return [];
 
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(clean)}&limit=7&addressdetails=1&accept-language=vi,en`;
-    const res = await fetch(url, {
-      headers: {
-        'Accept-Language': 'vi,en',
-        'User-Agent': 'FiboMap-Cinematic-App/2.0',
-      },
-    });
+  const results: PlaceSearchResult[] = [];
 
-    if (!res.ok) return [];
-    const osmResults = await res.json();
-
-    return osmResults.map((item: any) => {
-      let bbox: [number, number, number, number] | undefined = undefined;
-      if (item.boundingbox && Array.isArray(item.boundingbox) && item.boundingbox.length >= 4) {
-        const south = parseFloat(item.boundingbox[0]);
-        const north = parseFloat(item.boundingbox[1]);
-        const west = parseFloat(item.boundingbox[2]);
-        const east = parseFloat(item.boundingbox[3]);
-        bbox = [west, south, east, north];
-      }
-
-      return {
-        display_name: item.display_name,
-        lat: item.lat,
-        lon: item.lon,
-        bbox,
-      };
-    });
-  } catch (err) {
-    console.warn('Geocoding search API error:', err);
-    return [];
+  // 1. Instant 0ms Match from Local 63 Provinces & Cities database (No network wait)
+  for (const p of VIETNAM_63_PROVINCES) {
+    const pNorm = removeVietnameseTones(p.name);
+    if (pNorm.includes(norm) || norm.includes(pNorm)) {
+      results.push({
+        display_name: `${p.name} (Tỉnh / Thành phố)`,
+        lat: String(p.coords[1]),
+        lon: String(p.coords[0]),
+        bbox: p.bbox,
+      });
+    }
   }
+
+  // Famous landmark coordinates
+  const FAMOUS_SPOTS = [
+    { name: 'Đà Lạt', aliases: ['da lat', 'dalat'], lat: '11.9404', lon: '108.4583', bbox: [108.35, 11.85, 108.55, 12.05] as [number, number, number, number], label: 'Thành phố Đà Lạt, Lâm Đồng' },
+    { name: 'Nha Trang', aliases: ['nha trang'], lat: '12.2388', lon: '109.1967', bbox: [109.10, 12.15, 109.28, 12.33] as [number, number, number, number], label: 'Thành phố Nha Trang, Khánh Hòa' },
+    { name: 'Vũng Tàu', aliases: ['vung tau'], lat: '10.3460', lon: '107.0843', bbox: [107.03, 10.30, 107.15, 10.42] as [number, number, number, number], label: 'Thành phố Vũng Tàu' },
+    { name: 'Phú Quốc', aliases: ['phu quoc', 'dao phu quoc'], lat: '10.2289', lon: '103.9575', bbox: [103.85, 10.05, 104.10, 10.45] as [number, number, number, number], label: 'Thành phố đảo Phú Quốc, Kiên Giang' },
+    { name: 'Quy Nhơn', aliases: ['quy nhon'], lat: '13.7820', lon: '109.2197', bbox: [109.10, 13.70, 109.30, 13.85] as [number, number, number, number], label: 'Thành phố Quy Nhơn, Bình Định' },
+    { name: 'Pleiku', aliases: ['pleiku'], lat: '13.9833', lon: '108.0021', bbox: [107.92, 13.90, 108.10, 14.08] as [number, number, number, number], label: 'Thành phố Pleiku, Gia Lai' },
+    { name: 'Buôn Ma Thuột', aliases: ['buon ma thuot', 'bmt'], lat: '12.6667', lon: '108.0383', bbox: [107.95, 12.58, 108.15, 12.75] as [number, number, number, number], label: 'Thành phố Buôn Ma Thuột, Đắk Lắk' },
+    { name: 'Phan Thiết', aliases: ['phan thiet', 'mui ne'], lat: '10.9289', lon: '108.1022', bbox: [108.02, 10.85, 108.20, 11.00] as [number, number, number, number], label: 'Thành phố Phan Thiết, Bình Thuận' },
+    { name: 'Sa Pa', aliases: ['sa pa', 'sapa'], lat: '22.3364', lon: '103.8438', bbox: [103.80, 22.30, 103.90, 22.40] as [number, number, number, number], label: 'Thị xã Sa Pa, Lào Cai' },
+    { name: 'Hội An', aliases: ['hoi an'], lat: '15.8801', lon: '108.3380', bbox: [108.30, 15.85, 108.40, 15.92] as [number, number, number, number], label: 'Thành phố Hội An, Quảng Nam' },
+    { name: 'Hạ Long', aliases: ['ha long'], lat: '20.9505', lon: '107.0843', bbox: [106.98, 20.88, 107.20, 21.05] as [number, number, number, number], label: 'Thành phố Hạ Long, Quảng Ninh' },
+  ];
+
+  for (const s of FAMOUS_SPOTS) {
+    if (s.aliases.some(a => norm.includes(removeVietnameseTones(a)))) {
+      if (!results.some(r => r.display_name.includes(s.name))) {
+        results.unshift({
+          display_name: s.label,
+          lat: s.lat,
+          lon: s.lon,
+          bbox: s.bbox,
+        });
+      }
+    }
+  }
+
+  // 2. Query Photon Komoot Geocoder (High speed, no CORS issue, global coverage)
+  try {
+    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(clean)}&limit=6`;
+    const res = await fetch(photonUrl);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.features) {
+        for (const feat of data.features) {
+          const props = feat.properties || {};
+          const coords = feat.geometry?.coordinates || [];
+          if (coords.length >= 2) {
+            const lon = String(coords[0]);
+            const lat = String(coords[1]);
+            let bbox: [number, number, number, number] | undefined = undefined;
+            if (props.extent && Array.isArray(props.extent) && props.extent.length >= 4) {
+              bbox = [props.extent[0], props.extent[1], props.extent[2], props.extent[3]];
+            }
+
+            const title = [props.name, props.district, props.city, props.state, props.country]
+              .filter(Boolean)
+              .join(', ');
+
+            if (!results.some(r => Math.abs(parseFloat(r.lat) - parseFloat(lat)) < 0.02 && Math.abs(parseFloat(r.lon) - parseFloat(lon)) < 0.02)) {
+              results.push({
+                display_name: title || props.name || clean,
+                lat,
+                lon,
+                bbox,
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Photon geocoding error:', err);
+  }
+
+  // 3. Nominatim Fallback
+  try {
+    const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(clean)}&limit=5&addressdetails=1`;
+    const res = await fetch(nomUrl);
+    if (res.ok) {
+      const osmResults = await res.json();
+      for (const item of osmResults) {
+        if (!results.some(r => Math.abs(parseFloat(r.lat) - parseFloat(item.lat)) < 0.02 && Math.abs(parseFloat(r.lon) - parseFloat(item.lon)) < 0.02)) {
+          let bbox: [number, number, number, number] | undefined = undefined;
+          if (item.boundingbox && Array.isArray(item.boundingbox) && item.boundingbox.length >= 4) {
+            bbox = [parseFloat(item.boundingbox[2]), parseFloat(item.boundingbox[0]), parseFloat(item.boundingbox[3]), parseFloat(item.boundingbox[1])];
+          }
+          results.push({
+            display_name: item.display_name,
+            lat: item.lat,
+            lon: item.lon,
+            bbox,
+          });
+        }
+      }
+    }
+  } catch {
+    // Network fallback
+  }
+
+  return results.slice(0, 8);
 }
 
 export const MapCanvas: React.FC = () => {

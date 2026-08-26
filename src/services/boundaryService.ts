@@ -155,6 +155,28 @@ export const VIETNAM_34_MERGED_PROVINCES: AdminBoundaryItem[] = (
   };
 });
 
+export const VIETNAM_63_PROVINCES: AdminBoundaryItem[] = (
+  ((VIETNAM_63_PROVINCES_DATA as unknown as FeatureCollection).features || []) as any[]
+).map((feature: any, idx: number) => {
+  const props = feature.properties || {};
+  const name = props.name_vi || props.name || 'Tỉnh';
+  const bbox = feature.bbox || computeBboxFromGeoJSON(feature as Feature);
+  const centerLng = props.longitude || (bbox[0] + bbox[2]) / 2;
+  const centerLat = props.latitude || (bbox[1] + bbox[3]) / 2;
+
+  return {
+    id: `vn-63-${props.adm1_code || idx}`,
+    name,
+    fullName: `Tỉnh / Thành phố ${name}`,
+    level: 'province',
+    levelLabel: props.type || 'Tỉnh / Thành phố',
+    coords: [Number(centerLng), Number(centerLat)],
+    zoom: 9.5,
+    bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
+    geojson: feature as Feature,
+  };
+});
+
 // ── TP. QUY NHƠN & CÁC PHƯỜNG MỚI SAU SÁP NHẬP ────────────────────────────
 const QUYNHON_CITY_CONTOUR: [number, number][] = [
   [109.112, 13.795], [109.145, 13.840], [109.210, 13.848], [109.285, 13.855],
