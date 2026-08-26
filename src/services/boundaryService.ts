@@ -1,6 +1,7 @@
 import type { Feature, FeatureCollection } from 'geojson';
 import VIETNAM_34_MERGED_DATA from '../data/vietnam_34_merged.json';
 import VIETNAM_63_PROVINCES_DATA from '../data/vietnam_provinces.json';
+import WORLD_COUNTRIES_RAW from '../data/world_countries.json';
 
 export interface AdminBoundaryItem {
   id: string;
@@ -186,9 +187,15 @@ const QUYNHON_CITY_CONTOUR: [number, number][] = [
 ];
 
 // ══════════════════════════════════════════════════════════════════════════════
+// TẬP DỮ LIỆU TẤT CẢ QUỐC GIA TRÊN TOÀN CẦU (WORLD COUNTRIES GIS DATASET)
+// ══════════════════════════════════════════════════════════════════════════════
+export const WORLD_COUNTRIES_DATA: AdminBoundaryItem[] = (WORLD_COUNTRIES_RAW as unknown) as AdminBoundaryItem[];
+
+// ══════════════════════════════════════════════════════════════════════════════
 // CÁC QUẬN / HUYỆN & XÃ / PHƯỜNG ĐỊNH DANH SẴN
 // ══════════════════════════════════════════════════════════════════════════════
 export const VIETNAM_ADMIN_DATABASE: AdminBoundaryItem[] = [
+  ...WORLD_COUNTRIES_DATA,
   ...VIETNAM_34_MERGED_PROVINCES,
   ...VIETNAM_63_PROVINCES,
 
